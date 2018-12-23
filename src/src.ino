@@ -1,12 +1,9 @@
 #include <Arduino.h>
 
-const byte interruptPin = 2;
-volatile byte state = LOW;
-int ledState = HIGH;                                 // the current state of the output pin
-int buttonState;                                     // the current reading from the input pin
-int lastButtonState = LOW;                           // the previous reading from the input pin
-unsigned long lastDebounceTime = 0, lastTriggerTime; // the last time the output pin was toggled
-unsigned long debounceDelay = 80;
+#define interruptPin 2
+#define buttonPressTime 100                     // time in ms to keep the phone button pressed
+uint64_t lastDebounceTime = 0, lastTriggerTime; // the last time the output pin was toggled
+uint64_t debounceDelay = 80;
 volatile int c = 0;
 
 byte colPins[] = {4, 5, 6, 7, 8};
@@ -58,12 +55,39 @@ void irq() {
     interrupts();
 }
 
+void clearButtons() {
+    for (byte i = 0; i < rowPinsLength; i++) {
+        pinMode(rowPins[i], INPUT);
+    }
+    for (byte i = 0; i < colPinsLength; i++) {
+        pinMode(colPins[i], INPUT);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
+    Serial.println(F(">> Drehscheibentelefon to DECT <<<"));
+    Serial.println(F("\nYou can use ASCII characters to control the phone, apart from dialing with the rotary dial."));
+    Serial.println("\n\n> ");
 
     pinMode(interruptPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(interruptPin), irq, CHANGE);
+
+    for (byte i = 0; i < rowPinsLength; i++) {
+        pinMode(rowPins[i], INPUT);
+        digitalWrite(rowPins[i], LOW);
+    }
+    for (byte i = 0; i < colPinsLength; i++) {
+        pinMode(colPins[i], INPUT);
+        digitalWrite(colPins[i], HIGH);
+    }
 }
+
+uint32_t lastButtonPressed = 0, lastButtonScheduling = 0;
+bool buttonPressed = false;
+char scheduledButtons[50];
+bool buttonSchedulingInProgress = false;
+uint8_t scheduledButtonCount = 0, scheduledButtonIdx = 0;
 
 void loop() {
     unsigned long diff = millis() - lastDebounceTime;
@@ -72,6 +96,39 @@ void loop() {
         // Serial.println(String(millis()) + " " + String(lastDebounceTime) + " " + String(diff) + " " +  String(c));
         Serial.print(c % 10);
         c = 0;
+    }
+
+    // read stringed buttons to be pressed from serial into buffer
+    while (!buttonSchedulingInProgress && Serial.available()) {
+        char c = Serial.read();
+        if (c != '\n') {
+            scheduledButtons[scheduledButtonCount] = c;
+            scheduledButtonCount++;
+        } else {
+            buttonSchedulingInProgress = true;
+        }
+        Serial.print(c);
+    }
+
+    // handle the actual pressing of the buttons
+    if (buttonSchedulingInProgress) {
+        if (lastButtonScheduling + (buttonPressTime * 2) < millis()) {
+            lastButtonScheduling = millis();
+            if (scheduledButtonCount > 0) {
+                pressButton((button)scheduledButtons[scheduledButtonIdx]);
+                scheduledButtonIdx++;
+                if (scheduledButtonIdx >= scheduledButtonCount) {
+                    buttonSchedulingInProgress = false;
+                    Serial.print("\n> ");
+                }
+            }
+        }
+    }
+
+    // stop pressing the button after the timeout
+    if (buttonPressed && lastButtonPressed + buttonPressTime < millis()) {
+        buttonPressed = false;
+        clearButtons();
     }
 }
 
@@ -88,5 +145,13 @@ void pressButton(button btn) {
         if (done) {
             break;
         }
+    }
+
+    // check that the corresponding pins have actually been found
+    if (done) {
+        digitalWrite(colPins[x], OUTPUT);
+        digitalWrite(rowPins[y], OUTPUT);
+        lastButtonPressed = millis();
+        buttonPressed = true;
     }
 }
